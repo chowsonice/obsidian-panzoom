@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-panzoom",
 	"name": "Obsidian Panzoom",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"minAppVersion": "0.15.0",
 	"description": "Pan and zoom content with mouse wheel. Use Ctrl+wheel/mousepad to zoom, wheel alone to pan and scroll. Compatible with mobile.",
 	"author": "chowsonice",
