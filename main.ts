@@ -1,5 +1,6 @@
 import { App, Plugin, debounce } from 'obsidian';
 import Panzoom, { PanzoomObject } from '@panzoom/panzoom';
+import { PanzoomSettings, DEFAULT_SETTINGS, PanzoomSettingTab } from './src/settings';
 
 interface EventHandlers {
 	handleWheel: (event: WheelEvent) => void;
@@ -23,20 +24,23 @@ interface ViewContentData {
 }
 
 export default class MyPlugin extends Plugin {
+	settings: PanzoomSettings;
 	private readonly viewContentMap = new Map<HTMLElement, ViewContentData>();
 	private observer: MutationObserver | null = null;
 	private readonly debouncedReinitialize: () => void;
 
 	// Configuration constants
-	private static readonly PANZOOM_CONFIG: PanzoomConfig = {
-		noBind: true,
-		minScale: 1,
-		maxScale: 5,
-		contain: 'inside', // Start with inside for better default behavior
-		disableZoom: false,
-		cursor: 'default',
-		step: 0.1
-	};
+	private get panzoomConfig(): PanzoomConfig {
+		return {
+			noBind: true,
+			minScale: this.settings.minScale,
+			maxScale: this.settings.maxScale,
+			contain: 'inside',
+			disableZoom: false,
+			cursor: 'default',
+			step: this.settings.zoomStep
+		};
+	}
 
 	private static readonly OBSERVER_CONFIG: MutationObserverInit = {
 		childList: true,
@@ -63,6 +67,9 @@ export default class MyPlugin extends Plugin {
 	}
 
 	async onload(): Promise<void> {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.addSettingTab(new PanzoomSettingTab(this.app, this));
+
 		this.app.workspace.onLayoutReady(() => {
 			this.initializeAllPanzoom();
 			this.setupObserver();
@@ -112,7 +119,7 @@ export default class MyPlugin extends Plugin {
 		if (!viewContent || this.viewContentMap.has(viewContent)) return;
 
 		try {
-			const panzoomInstance = Panzoom(viewContent, MyPlugin.PANZOOM_CONFIG);
+			const panzoomInstance = Panzoom(viewContent, this.panzoomConfig);
 			const cmScroller = viewContent.querySelector(MyPlugin.CM_SCROLLER_SELECTOR) as HTMLElement;
 			const previewScroller = viewContent.querySelector('.' + MyPlugin.PREVIEW_VIEW_CLASS) as HTMLElement;
 			const eventHandlers = this.createEventHandlers(panzoomInstance, cmScroller, previewScroller, viewContent);
@@ -186,12 +193,10 @@ export default class MyPlugin extends Plugin {
 		}
 	}
 
-	private static readonly SCROLL_DAMPING = 0.6;
-
 	private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, scroller: HTMLElement | null): void {
 		const { deltaX = 0, deltaY = 0 } = event;
 		const scale = panzoomInstance.getScale();
-		const damping = MyPlugin.SCROLL_DAMPING;
+		const damping = this.settings.scrollDamping;
 		const adjustedDeltaX = Math.round((deltaX / scale) * damping);
 		const adjustedDeltaY = Math.round((deltaY / scale) * damping);
 		
@@ -281,5 +286,11 @@ export default class MyPlugin extends Plugin {
 		this.observer?.disconnect();
 		this.cleanup();
 		this.observer = null;
+	}
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+		this.cleanup();
+		this.initializeAllPanzoom();
 	}
 }
