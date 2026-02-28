@@ -135,13 +135,18 @@ export default class MyPlugin extends Plugin {
 		return (event: WheelEvent) => {
 			if (!panzoomInstance) return;
 
-			event.preventDefault();
-			
+			const currentScale = panzoomInstance.getScale();
+
 			if (event.ctrlKey) {
+				// Zoom: always intercept
+				event.preventDefault();
 				this.handleZoom(event, panzoomInstance);
-			} else {
+			} else if (currentScale > 1) {
+				// Panning + programmatic scroll only when zoomed in
+				event.preventDefault();
 				this.handlePanAndScroll(event, panzoomInstance, cmScroller);
 			}
+			// At scale 1 without Ctrl: let native scroll happen (no preventDefault)
 		};
 	}
 
@@ -171,7 +176,7 @@ export default class MyPlugin extends Plugin {
 		const { deltaX = 0, deltaY = 0 } = event;
 		
 		this.applyPanning(deltaX, deltaY, panzoomInstance);
-		this.applyCmScrolling(deltaX, deltaY, cmScroller);
+		this.applyScrolling(deltaX, deltaY, cmScroller);
 	}
 
 	private applyPanning(deltaX: number, deltaY: number, panzoomInstance: PanzoomObject): void {
@@ -183,7 +188,7 @@ export default class MyPlugin extends Plugin {
 		);
 	}
 
-	private applyCmScrolling(deltaX: number, deltaY: number, cmScroller: HTMLElement | null): void {
+	private applyScrolling(deltaX: number, deltaY: number, cmScroller: HTMLElement | null): void {
 		cmScroller?.scrollBy({
 			left: deltaX,
 			top: deltaY,
@@ -258,17 +263,3 @@ export default class MyPlugin extends Plugin {
 		this.observer = null;
 	}
 }
-
-// class SampleSettingTab extends PluginSettingTab {
-// 	plugin: MyPlugin;
-
-// 	constructor(app: App, plugin: MyPlugin) {
-// 		super(app, plugin);
-// 		this.plugin = plugin;
-// 	}
-
-// 	display(): void {
-// 		const { containerEl } = this;
-// 		containerEl.empty();
-// 	}
-// }
