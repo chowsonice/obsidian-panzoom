@@ -19,6 +19,7 @@ interface ViewContentData {
 	panzoomInstance: PanzoomObject;
 	eventHandlers: EventHandlers;
 	cmScroller: HTMLElement | null;
+	previewScroller: HTMLElement | null;
 }
 
 export default class MyPlugin extends Plugin {
@@ -50,6 +51,7 @@ export default class MyPlugin extends Plugin {
 	// Selectors
 	private static readonly VIEW_CONTENT_SELECTOR = '.view-content';
 	private static readonly CM_SCROLLER_SELECTOR = '.cm-scroller';
+	private static readonly PREVIEW_VIEW_CLASS = 'markdown-preview-view';
 
 	constructor(app: App, manifest: any) {
 		super(app, manifest);
@@ -61,7 +63,6 @@ export default class MyPlugin extends Plugin {
 	}
 
 	async onload(): Promise<void> {
-		// Attendre que le workspace soit prêt pour éviter d'impacter le temps de chargement
 		this.app.workspace.onLayoutReady(() => {
 			this.initializeAllPanzoom();
 			this.setupObserver();
@@ -101,18 +102,26 @@ export default class MyPlugin extends Plugin {
 			   window.getComputedStyle(element).display !== 'none';
 	}
 
+	private getViewMode(viewContent: HTMLElement): 'edit' | 'preview' {
+		const leafContent = viewContent.closest('.workspace-leaf-content');
+		const dataMode = leafContent?.getAttribute('data-mode');
+		return dataMode === 'preview' ? 'preview' : 'edit';
+	}
+
 	private createPanzoomInstance(viewContent: HTMLElement): void {
 		if (!viewContent || this.viewContentMap.has(viewContent)) return;
 
 		try {
 			const panzoomInstance = Panzoom(viewContent, MyPlugin.PANZOOM_CONFIG);
 			const cmScroller = viewContent.querySelector(MyPlugin.CM_SCROLLER_SELECTOR) as HTMLElement;
-			const eventHandlers = this.createEventHandlers(panzoomInstance, cmScroller);
+			const previewScroller = viewContent.querySelector('.' + MyPlugin.PREVIEW_VIEW_CLASS) as HTMLElement;
+			const eventHandlers = this.createEventHandlers(panzoomInstance, cmScroller, previewScroller, viewContent);
 			
 			const viewData: ViewContentData = {
 				panzoomInstance,
 				eventHandlers,
-				cmScroller
+				cmScroller,
+				previewScroller
 			};
 			
 			this.viewContentMap.set(viewContent, viewData);
@@ -124,18 +133,23 @@ export default class MyPlugin extends Plugin {
 
 	private createEventHandlers(
 		panzoomInstance: PanzoomObject, 
-		cmScroller: HTMLElement | null
+		cmScroller: HTMLElement | null,
+		previewScroller: HTMLElement | null,
+		viewContent: HTMLElement
 	): EventHandlers {
 		return {
-			handleWheel: this.createWheelHandler(panzoomInstance, cmScroller)
+			handleWheel: this.createWheelHandler(panzoomInstance, cmScroller, previewScroller, viewContent)
 		};
 	}
 
-	private createWheelHandler(panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null) {
+	private createWheelHandler(panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement) {
 		return (event: WheelEvent) => {
+			const mode = this.getViewMode(viewContent);
 			if (!panzoomInstance) return;
 
 			const currentScale = panzoomInstance.getScale();
+			const isPreview = mode === 'preview';
+			const scroller = isPreview ? previewScroller : cmScroller;
 
 			if (event.ctrlKey) {
 				// Zoom: always intercept
@@ -144,7 +158,7 @@ export default class MyPlugin extends Plugin {
 			} else if (currentScale > 1) {
 				// Panning + programmatic scroll only when zoomed in
 				event.preventDefault();
-				this.handlePanAndScroll(event, panzoomInstance, cmScroller);
+				this.handlePanAndScroll(event, panzoomInstance, scroller);
 			}
 			// At scale 1 without Ctrl: let native scroll happen (no preventDefault)
 		};
@@ -172,11 +186,11 @@ export default class MyPlugin extends Plugin {
 		}
 	}
 
-	private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null): void {
+	private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, scroller: HTMLElement | null): void {
 		const { deltaX = 0, deltaY = 0 } = event;
 		
 		this.applyPanning(deltaX, deltaY, panzoomInstance);
-		this.applyScrolling(deltaX, deltaY, cmScroller);
+		this.applyScrolling(deltaX, deltaY, scroller);
 	}
 
 	private applyPanning(deltaX: number, deltaY: number, panzoomInstance: PanzoomObject): void {
@@ -188,8 +202,8 @@ export default class MyPlugin extends Plugin {
 		);
 	}
 
-	private applyScrolling(deltaX: number, deltaY: number, cmScroller: HTMLElement | null): void {
-		cmScroller?.scrollBy({
+	private applyScrolling(deltaX: number, deltaY: number, scroller: HTMLElement | null): void {
+		scroller?.scrollBy({
 			left: deltaX,
 			top: deltaY,
 			behavior: 'auto'
