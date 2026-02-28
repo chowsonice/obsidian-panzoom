@@ -186,11 +186,17 @@ export default class MyPlugin extends Plugin {
 		}
 	}
 
+	private static readonly SCROLL_DAMPING = 0.6;
+
 	private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, scroller: HTMLElement | null): void {
 		const { deltaX = 0, deltaY = 0 } = event;
+		const scale = panzoomInstance.getScale();
+		const damping = MyPlugin.SCROLL_DAMPING;
+		const adjustedDeltaX = Math.round((deltaX / scale) * damping);
+		const adjustedDeltaY = Math.round((deltaY / scale) * damping);
 		
-		this.applyPanning(deltaX, deltaY, panzoomInstance);
-		this.applyScrolling(deltaX, deltaY, scroller);
+		this.applyPanning(adjustedDeltaX, adjustedDeltaY, panzoomInstance);
+		this.applyScrolling(adjustedDeltaX, adjustedDeltaY, scroller);
 	}
 
 	private applyPanning(deltaX: number, deltaY: number, panzoomInstance: PanzoomObject): void {
