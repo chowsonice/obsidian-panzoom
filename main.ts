@@ -1,296 +1,122 @@
-import { App, Plugin, debounce } from 'obsidian';
+import { App, Plugin, MarkdownView, WorkspaceLeaf, debounce } from 'obsidian';
 import Panzoom, { PanzoomObject } from '@panzoom/panzoom';
 import { PanzoomSettings, DEFAULT_SETTINGS, PanzoomSettingTab } from './src/settings';
 
-interface EventHandlers {
-	handleWheel: (event: WheelEvent) => void;
+interface LeafPanzoomData {
+    panzoom: PanzoomObject;
+    handleWheel: (e: WheelEvent) => void;
+    targetEl: HTMLElement;
 }
 
-interface PanzoomConfig {
-	noBind: true;
-	minScale: number;
-	maxScale: number;
-	contain: 'inside' | 'outside';
-	disableZoom: boolean;
-	cursor: string;
-	step: number;
-}
+export default class PanzoomPlugin extends Plugin {
+    settings: PanzoomSettings;
+    private readonly activeLeaves = new Map<WorkspaceLeaf, LeafPanzoomData>();
+    private readonly debouncedRefresh: () => void;
 
-interface ViewContentData {
-	panzoomInstance: PanzoomObject;
-	eventHandlers: EventHandlers;
-	cmScroller: HTMLElement | null;
-	previewScroller: HTMLElement | null;
-}
+    private static readonly ZOOM_THRESHOLD_LOW = 1.1;
+    private static readonly ZOOM_THRESHOLD_HIGH = 1.2;
 
-export default class MyPlugin extends Plugin {
-	settings: PanzoomSettings;
-	private readonly viewContentMap = new Map<HTMLElement, ViewContentData>();
-	private observer: MutationObserver | null = null;
-	private readonly debouncedReinitialize: () => void;
+    constructor(app: App, manifest: any) {
+        super(app, manifest);
+        this.debouncedRefresh = debounce(this.refreshLeaves.bind(this), 100, true);
+    }
 
-	// Configuration constants
-	private get panzoomConfig(): PanzoomConfig {
-		return {
-			noBind: true,
-			minScale: this.settings.minScale,
-			maxScale: this.settings.maxScale,
-			contain: 'inside',
-			disableZoom: false,
-			cursor: 'default',
-			step: this.settings.zoomStep
-		};
-	}
+    async onload(): Promise<void> {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        this.addSettingTab(new PanzoomSettingTab(this.app, this));
 
-	private static readonly OBSERVER_CONFIG: MutationObserverInit = {
-		childList: true,
-		subtree: true
-	};
+        this.app.workspace.onLayoutReady(() => {
+            this.refreshLeaves();
+            this.registerEvent(this.app.workspace.on('layout-change', this.debouncedRefresh));
+            this.registerEvent(this.app.workspace.on('active-leaf-change', this.debouncedRefresh));
+        });
+    }
 
-	// Zoom thresholds for contain switching
-	private static readonly ZOOM_THRESHOLD_LOW = 1.1;
-	private static readonly ZOOM_THRESHOLD_HIGH = 1.2;
-	private static readonly REINIT_DELAY = 150; // Increased for better performance
+    private refreshLeaves(): void {
+        const currentLeaves = new Set<WorkspaceLeaf>();
 
-	// Selectors
-	private static readonly VIEW_CONTENT_SELECTOR = '.view-content';
-	private static readonly CM_SCROLLER_SELECTOR = '.cm-scroller';
-	private static readonly PREVIEW_VIEW_CLASS = 'markdown-preview-view';
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (leaf.view instanceof MarkdownView) {
+                currentLeaves.add(leaf);
+                if (!this.activeLeaves.has(leaf)) {
+                    this.attachPanzoom(leaf, leaf.view);
+                }
+            }
+        });
 
-	constructor(app: App, manifest: any) {
-		super(app, manifest);
-		this.debouncedReinitialize = debounce(
-			this.reinitializeIfNeeded.bind(this),
-			MyPlugin.REINIT_DELAY,
-			true
-		);
-	}
+        // Cleanup closed or non-markdown leaves
+        for (const [leaf, data] of this.activeLeaves) {
+            if (!currentLeaves.has(leaf)) {
+                this.detachPanzoom(leaf, data);
+            }
+        }
+    }
 
-	async onload(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		this.addSettingTab(new PanzoomSettingTab(this.app, this));
+    private attachPanzoom(leaf: WorkspaceLeaf, view: MarkdownView): void {
+        const targetEl = view.contentEl;
+        if (!targetEl) return;
 
-		this.app.workspace.onLayoutReady(() => {
-			this.initializeAllPanzoom();
-			this.setupObserver();
-			this.setupWorkspaceListeners();
-		});
-	}
+        const panzoom = Panzoom(targetEl, {
+            noBind: true,
+            minScale: this.settings.minScale,
+            maxScale: this.settings.maxScale,
+            contain: 'inside',
+            disableZoom: false,
+            cursor: 'default',
+            step: this.settings.zoomStep
+        });
 
-	private initializeAllPanzoom(): void {
-		const viewContents = this.getAllVisibleViewContents();
-		for (const viewContent of viewContents) {
-			if (!this.viewContentMap.has(viewContent)) {
-				this.createPanzoomInstance(viewContent);
-			}
-		}
-	}
+        const handleWheel = (event: WheelEvent) => {
+            const scale = panzoom.getScale();
 
-	private getAllVisibleViewContents(): HTMLElement[] {
-		return Array.from(document.querySelectorAll(MyPlugin.VIEW_CONTENT_SELECTOR))
-			.filter((element): element is HTMLElement => {
-				if (!(element instanceof HTMLElement)) return false;
-				if (!this.isElementVisible(element)) return false;
-				
-				// Exclure les leafs PDF - vérifier si le parent a data-type="pdf"
-				const leafContent = element.parentElement;
-				if (leafContent && 
-					leafContent.classList.contains('workspace-leaf-content') && 
-					leafContent.getAttribute('data-type') === 'pdf') {
-					return false;
-				}
-				
-				return true;
-			});
-	}
+            if (event.ctrlKey) {
+                event.preventDefault();
+                const isZoomingIn = event.deltaY < 0;
+                const currentContain = panzoom.getOptions().contain;
 
-	private isElementVisible(element: HTMLElement): boolean {
-		return document.contains(element) && 
-			   window.getComputedStyle(element).display !== 'none';
-	}
+                if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
+                    panzoom.setOptions({ contain: 'outside' });
+                } else if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
+                    panzoom.setOptions({ contain: 'inside' });
+                }
 
-	private getViewMode(viewContent: HTMLElement): 'edit' | 'preview' {
-		const leafContent = viewContent.closest('.workspace-leaf-content');
-		const dataMode = leafContent?.getAttribute('data-mode');
-		return dataMode === 'preview' ? 'preview' : 'edit';
-	}
+                panzoom.zoomWithWheel(event);
+            } else if (scale > 1) {
+                event.preventDefault();
+                const damping = this.settings.scrollDamping ?? 1;
+                const currentPan = panzoom.getPan();
+                panzoom.pan(
+                    currentPan.x - Math.round((event.deltaX / scale) * damping),
+                    currentPan.y - Math.round((event.deltaY / scale) * damping),
+                    { relative: false }
+                );
+            }
+        };
 
-	private createPanzoomInstance(viewContent: HTMLElement): void {
-		if (!viewContent || this.viewContentMap.has(viewContent)) return;
+        targetEl.addEventListener('wheel', handleWheel, { passive: false });
+        this.activeLeaves.set(leaf, { panzoom, handleWheel, targetEl });
+    }
 
-		try {
-			const panzoomInstance = Panzoom(viewContent, this.panzoomConfig);
-			const cmScroller = viewContent.querySelector(MyPlugin.CM_SCROLLER_SELECTOR) as HTMLElement;
-			const previewScroller = viewContent.querySelector('.' + MyPlugin.PREVIEW_VIEW_CLASS) as HTMLElement;
-			const eventHandlers = this.createEventHandlers(panzoomInstance, cmScroller, previewScroller, viewContent);
-			
-			const viewData: ViewContentData = {
-				panzoomInstance,
-				eventHandlers,
-				cmScroller,
-				previewScroller
-			};
-			
-			this.viewContentMap.set(viewContent, viewData);
-			this.bindEvents(viewContent, eventHandlers);
-		} catch (error) {
-			console.error('Erreur lors de l\'initialisation de Panzoom:', error);
-		}
-	}
+    private detachPanzoom(leaf: WorkspaceLeaf, data: LeafPanzoomData): void {
+        data.targetEl.removeEventListener('wheel', data.handleWheel);
+        data.panzoom.destroy();
+        this.activeLeaves.delete(leaf);
+    }
 
-	private createEventHandlers(
-		panzoomInstance: PanzoomObject, 
-		cmScroller: HTMLElement | null,
-		previewScroller: HTMLElement | null,
-		viewContent: HTMLElement
-	): EventHandlers {
-		return {
-			handleWheel: this.createWheelHandler(panzoomInstance, cmScroller, previewScroller, viewContent)
-		};
-	}
+    onunload(): void {
+        for (const [leaf, data] of this.activeLeaves) {
+            this.detachPanzoom(leaf, data);
+        }
+    }
 
-	private createWheelHandler(panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement) {
-		return (event: WheelEvent) => {
-			const mode = this.getViewMode(viewContent);
-			if (!panzoomInstance) return;
-
-			const currentScale = panzoomInstance.getScale();
-			const isPreview = mode === 'preview';
-			const scroller = isPreview ? previewScroller : cmScroller;
-
-			if (event.ctrlKey) {
-				// Zoom: always intercept
-				event.preventDefault();
-				this.handleZoom(event, panzoomInstance);
-			} else if (currentScale > 1) {
-				// Panning + programmatic scroll only when zoomed in
-				event.preventDefault();
-				this.handlePanAndScroll(event, panzoomInstance, scroller);
-			}
-			// At scale 1 without Ctrl: let native scroll happen (no preventDefault)
-		};
-	}
-
-	private handleZoom(event: WheelEvent, panzoomInstance: PanzoomObject): void {
-		const currentScale = panzoomInstance.getScale();
-		const currentContain = panzoomInstance.getOptions().contain || 'inside';
-		const isZoomingIn = event.deltaY < 0;
-		
-		this.updateContainForZoom(panzoomInstance, currentScale, currentContain, isZoomingIn);
-		panzoomInstance.zoomWithWheel(event);
-	}
-
-	private updateContainForZoom(
-		panzoomInstance: PanzoomObject, 
-		currentScale: number, 
-		currentContain: string, 
-		isZoomingIn: boolean
-	): void {
-		if (currentScale <= MyPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
-			panzoomInstance.setOptions({ contain: 'outside' });
-		} else if (currentScale <= MyPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
-			panzoomInstance.setOptions({ contain: 'inside' });
-		}
-	}
-
-	private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, scroller: HTMLElement | null): void {
-		const { deltaX = 0, deltaY = 0 } = event;
-		const scale = panzoomInstance.getScale();
-		const damping = this.settings.scrollDamping;
-		const adjustedDeltaX = Math.round((deltaX / scale) * damping);
-		const adjustedDeltaY = Math.round((deltaY / scale) * damping);
-		
-		this.applyPanning(adjustedDeltaX, adjustedDeltaY, panzoomInstance);
-		this.applyScrolling(adjustedDeltaX, adjustedDeltaY, scroller);
-	}
-
-	private applyPanning(deltaX: number, deltaY: number, panzoomInstance: PanzoomObject): void {
-		const currentPan = panzoomInstance.getPan();
-		panzoomInstance.pan(
-			currentPan.x - deltaX,
-			currentPan.y - deltaY,
-			{ relative: false }
-		);
-	}
-
-	private applyScrolling(deltaX: number, deltaY: number, scroller: HTMLElement | null): void {
-		scroller?.scrollBy({
-			left: deltaX,
-			top: deltaY,
-			behavior: 'auto'
-		});
-	}
-
-	private bindEvents(viewContent: HTMLElement, eventHandlers: EventHandlers): void {
-		viewContent.addEventListener('wheel', eventHandlers.handleWheel, { passive: false });
-	}
-
-	private unbindEvents(viewContent: HTMLElement, eventHandlers: EventHandlers): void {
-		viewContent.removeEventListener('wheel', eventHandlers.handleWheel);
-	}
-
-	private setupObserver(): void {
-		this.observer = new MutationObserver(this.handleDOMChanges.bind(this));
-		this.observer.observe(document.body, MyPlugin.OBSERVER_CONFIG);
-	}
-
-	private setupWorkspaceListeners(): void {
-		this.registerEvent(
-			this.app.workspace.on('active-leaf-change', this.debouncedReinitialize)
-		);
-		this.registerEvent(
-			this.app.workspace.on('layout-change', this.debouncedReinitialize)
-		);
-		this.registerEvent(
-			this.app.workspace.on('file-open', this.debouncedReinitialize)
-		);
-	}
-
-	private reinitializeIfNeeded(): void {
-		if (!this.app.workspace.layoutReady) return;
-		
-		this.cleanupInvalidInstances();
-		this.initializeAllPanzoom();
-	}
-
-	private cleanupInvalidInstances(): void {
-		for (const [viewContent, viewData] of this.viewContentMap) {
-			if (!this.isElementVisible(viewContent)) {
-				this.cleanupSingleInstance(viewContent);
-			}
-		}
-	}
-
-	private cleanupSingleInstance(viewContent: HTMLElement): void {
-		const viewData = this.viewContentMap.get(viewContent);
-		if (!viewData) return;
-		
-		this.unbindEvents(viewContent, viewData.eventHandlers);
-		viewData.panzoomInstance.destroy();
-		this.viewContentMap.delete(viewContent);
-	}
-
-	private handleDOMChanges(): void {
-		if (!this.app.workspace.layoutReady) return;
-		this.debouncedReinitialize();
-	}
-
-	private cleanup(): void {
-		for (const [viewContent] of this.viewContentMap) {
-			this.cleanupSingleInstance(viewContent);
-		}
-		this.viewContentMap.clear();
-	}
-
-	onunload(): void {
-		this.observer?.disconnect();
-		this.cleanup();
-		this.observer = null;
-	}
-
-	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
-		this.cleanup();
-		this.initializeAllPanzoom();
-	}
+    async saveSettings(): Promise<void> {
+        await this.saveData(this.settings);
+        for (const { panzoom } of this.activeLeaves.values()) {
+            panzoom.setOptions({
+                minScale: this.settings.minScale,
+                maxScale: this.settings.maxScale,
+                step: this.settings.zoomStep
+            });
+        }
+    }
 }
