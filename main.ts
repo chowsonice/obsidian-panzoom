@@ -19,9 +19,6 @@ export default class PanzoomPlugin extends Plugin {
     private readonly debouncedRefresh: () => void;
     private debugEl: HTMLElement | null = null; // Visual Debugger Element
 
-    private static readonly ZOOM_THRESHOLD_LOW = 1.1;
-    private static readonly ZOOM_THRESHOLD_HIGH = 1.2;
-
     constructor(app: App, manifest: any) {
         super(app, manifest);
         this.debouncedRefresh = debounce(this.refreshLeaves.bind(this), 100, true);
@@ -102,7 +99,7 @@ export default class PanzoomPlugin extends Plugin {
             noBind: true, 
             minScale: this.settings.minScale,
             maxScale: this.settings.maxScale,
-            contain: 'inside',
+            contain: 'outside',
             disableZoom: false,
             cursor: 'default',
             step: this.settings.zoomStep
@@ -110,27 +107,9 @@ export default class PanzoomPlugin extends Plugin {
 
         // --- DESKTOP WHEEL LOGIC ---
         const handleWheel = (event: WheelEvent) => {
-            const scale = panzoom.getScale();
-            if (event.ctrlKey) {
+            if (event.ctrlKey || event.metaKey) {
                 event.preventDefault();
-                const isZoomingIn = event.deltaY < 0;
-                const currentContain = panzoom.getOptions().contain;
-
-                if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
-                    panzoom.setOptions({ contain: 'outside' });
-                } else if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
-                    panzoom.setOptions({ contain: 'inside' });
-                }
                 panzoom.zoomWithWheel(event);
-            } else if (scale > 1) {
-                event.preventDefault();
-                const damping = this.settings.scrollDamping ?? 1;
-                const currentPan = panzoom.getPan();
-                panzoom.pan(
-                    currentPan.x - Math.round((event.deltaX / scale) * damping),
-                    currentPan.y - Math.round((event.deltaY / scale) * damping),
-                    { relative: false }
-                );
             }
         };
 
