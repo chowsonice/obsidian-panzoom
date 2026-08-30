@@ -162,11 +162,6 @@ export default class MyPlugin extends Plugin {
         return dataMode === 'preview' ? 'preview' : 'edit';
     }
 
-    private getPanDirection(deltaX: number, deltaY: number): 'horizontal' | 'vertical' | 'none' {
-        if (deltaX === 0 && deltaY === 0) return 'none';
-        return Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
-    }
-
     private createPanzoomInstance(viewContent: HTMLElement): void {
         if (!viewContent || this.viewContentMap.has(viewContent)) return;
 
