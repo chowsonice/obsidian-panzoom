@@ -240,8 +240,12 @@ export default class MyPlugin extends Plugin {
                 // Calculate the multiplier based on the ENTIRE pinch gesture, not just the last frame
                 const zoomFactor = distance / initialPinchDistance;
                 const newScale = initialScale * zoomFactor;
-                
-                panzoomInstance.zoomToPoint(newScale, center, { animate: false });                // CRITICAL FIX: We no longer reset initialPinchDistance here!
+				const isZoomingIn = newScale > panzoomInstance.getScale(); // Determine zoom direction
+				
+				// Dynamically update the contain rule so Panzoom doesn't block the scale
+				this.updateContainForZoom(panzoomInstance, isZoomingIn);
+
+				panzoomInstance.zoomToPoint(newScale, center, { animate: false });                // CRITICAL FIX: We no longer reset initialPinchDistance here!
 
                 // CRITICAL FIX: We no longer reset initialPinchDistance here!
 
@@ -332,20 +336,17 @@ export default class MyPlugin extends Plugin {
     }
 
     private handleZoom(event: WheelEvent, panzoomInstance: PanzoomObject): void {
-        const currentScale = panzoomInstance.getScale();
-        const currentContain = panzoomInstance.getOptions().contain || 'inside';
         const isZoomingIn = event.deltaY < 0;
-        
-        this.updateContainForZoom(panzoomInstance, currentScale, currentContain, isZoomingIn);
+        this.updateContainForZoom(panzoomInstance, isZoomingIn);
         panzoomInstance.zoomWithWheel(event);
     }
 
     private updateContainForZoom(
         panzoomInstance: PanzoomObject, 
-        currentScale: number, 
-        currentContain: string, 
-        isZoomingIn: boolean
+		isZoomingIn: boolean
     ): void {
+		const currentScale = panzoomInstance.getScale();
+		const currentContain = panzoomInstance.getOptions().contain || 'inside';
         if (currentScale <= MyPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
             panzoomInstance.setOptions({ contain: 'outside' });
         } else if (currentScale <= MyPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
