@@ -181,98 +181,103 @@ export default class MyPlugin extends Plugin {
      * Unified zoom application that manages the "snap to 1.0" behavior 
      * to prevent border stuttering and keep the logic DRY.
      */
-    private applyZoomAndSnap(panzoomInstance: PanzoomObject, newScale: number, center: { clientX: number, clientY: number }): void {
-        const currentScale = panzoomInstance.getScale();
-        const isZoomingIn = newScale > currentScale;
+    private applyZoomAndSnap(panzoomInstance: PanzoomObject, newScale: number, lastIntendedScale: number, center: { clientX: number, clientY: number }): void {
+		// Check if the user's ACTUAL gesture is zooming in, regardless of the snapped scale
+		const isZoomingIn = newScale > lastIntendedScale;
 
-        // If we drop below the snap scale while zooming OUT, snap directly to 1.0 and lock borders
-        if (newScale <= MyPlugin.SNAP_SCALE && !isZoomingIn) {
-            if (panzoomInstance.getOptions().contain !== 'inside') {
-                panzoomInstance.setOptions({ contain: 'inside' });
-            }
-            panzoomInstance.zoom(1, { animate: false });
-            panzoomInstance.pan(0, 0, { animate: false });
-        } else {
-            // Free zooming (contain outside). Triggers if zooming > 1.1 OR zooming IN from 1.0.
-            if (panzoomInstance.getOptions().contain !== 'outside') {
-                panzoomInstance.setOptions({ contain: 'outside' });
-            }
-            panzoomInstance.zoomToPoint(newScale, center, { animate: false });
-        }
-    }
+		if (newScale <= MyPlugin.SNAP_SCALE && !isZoomingIn) {
+			if (panzoomInstance.getOptions().contain !== 'inside') {
+				panzoomInstance.setOptions({ contain: 'inside' });
+			}
+			// Only trigger the snap if we aren't already at 1 to save performance
+			if (panzoomInstance.getScale() !== 1) {
+				panzoomInstance.zoom(1, { animate: false });
+				panzoomInstance.pan(0, 0, { animate: false });
+			}
+		} else {
+			if (panzoomInstance.getOptions().contain !== 'outside') {
+				panzoomInstance.setOptions({ contain: 'outside' });
+			}
+			panzoomInstance.zoomToPoint(newScale, center, { animate: false });
+		}
+	}
 
     /** Translates a two-finger pinch gesture into a Panzoom zoom operation */
-    private executeTouchZoom(touch1: Touch, touch2: Touch, initialScale: number, initialPinchDistance: number, panzoomInstance: PanzoomObject): void {
-        const dx = touch1.clientX - touch2.clientX;
-        const dy = touch1.clientY - touch2.clientY;
-        const currentDistance = Math.hypot(dx, dy);
-        
-        const center = {
-            clientX: (touch1.clientX + touch2.clientX) / 2,
-            clientY: (touch1.clientY + touch2.clientY) / 2
-        };
+    private executeTouchZoom(touch1: Touch, touch2: Touch, initialScale: number, initialPinchDistance: number, panzoomInstance: PanzoomObject, lastIntendedScale: number): number {
+		const dx = touch1.clientX - touch2.clientX;
+		const dy = touch1.clientY - touch2.clientY;
+		const currentDistance = Math.hypot(dx, dy);
+		
+		const center = {
+			clientX: (touch1.clientX + touch2.clientX) / 2,
+			clientY: (touch1.clientY + touch2.clientY) / 2
+		};
 
-        const distanceDelta = Math.abs(currentDistance - initialPinchDistance);
-        const dynamicSpeedModifier = 1 + (distanceDelta * 0.002);
-        
-        let zoomFactor = currentDistance / initialPinchDistance;
-        if (zoomFactor > 1) {
-            zoomFactor *= dynamicSpeedModifier; 
-        } else if (zoomFactor < 1) {
-            zoomFactor /= dynamicSpeedModifier; 
-        }
+		const distanceDelta = Math.abs(currentDistance - initialPinchDistance);
+		const dynamicSpeedModifier = 1 + (distanceDelta * 0.002);
+		
+		let zoomFactor = currentDistance / initialPinchDistance;
+		if (zoomFactor > 1) {
+			zoomFactor *= dynamicSpeedModifier; 
+		} else if (zoomFactor < 1) {
+			zoomFactor /= dynamicSpeedModifier; 
+		}
 
-        const newScale = initialScale * zoomFactor;
-        
-        // Pass to our unified snap function
-        this.applyZoomAndSnap(panzoomInstance, newScale, center);
-    }
+		const newScale = initialScale * zoomFactor;
+		
+		this.applyZoomAndSnap(panzoomInstance, newScale, lastIntendedScale, center);
+		
+		return newScale; // Return this to track the gesture frame-by-frame
+	}
 
     // ==========================================
     // INPUT HANDLERS
     // ==========================================
 
     private createEventHandlers(
-        panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement
-    ): EventHandlers {
-        
-        // Touch State Tracking
-        let initialPinchDistance = 0;
-        let initialScale = 1; 
-        let lastPanPosition = { x: 0, y: 0 };
-        let touchState: 'none' | 'panning' | 'pinching' = 'none';
+		panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement
+	): EventHandlers {
+		
+		// Touch State Tracking
+		let initialPinchDistance = 0;
+		let initialScale = 1; 
+		let lastPanPosition = { x: 0, y: 0 };
+		let touchState: 'none' | 'panning' | 'pinching' = 'none';
+		let lastIntendedScale = 1; // <-- NEW: Tracks actual finger movement
 
-        // Trackpad / Wheel State
-        let wheelGestureAccumulator = 0;
-        let wheelGestureTimeout: ReturnType<typeof setTimeout> | null = null;
+		// Trackpad / Wheel State
+		let wheelGestureAccumulator = 0;
+		let wheelGestureTimeout: ReturnType<typeof setTimeout> | null = null;
 
-        const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
+		const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
 
-        const handleTouchStart = (e: TouchEvent) => {
-            if (e.touches.length === 2) {
-                touchState = 'pinching';
-                e.preventDefault(); 
-                initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-                initialScale = panzoomInstance.getScale(); 
-            } else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
-                touchState = 'panning';
-                lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-            } else {
-                touchState = 'none';
-            }
-        };
+		const handleTouchStart = (e: TouchEvent) => {
+			if (e.touches.length === 2) {
+				touchState = 'pinching';
+				e.preventDefault(); 
+				initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+				initialScale = panzoomInstance.getScale(); 
+				lastIntendedScale = initialScale; // <-- NEW: Initialize on touch start
+			} else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
+				touchState = 'panning';
+				lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+			} else {
+				touchState = 'none';
+			}
+		};
 
-        const handleTouchMove = (e: TouchEvent) => {
-            if (touchState === 'pinching' && e.touches.length === 2) {
-                e.preventDefault(); 
-                this.executeTouchZoom(e.touches[0], e.touches[1], initialScale, initialPinchDistance, panzoomInstance);
+		const handleTouchMove = (e: TouchEvent) => {
+			if (touchState === 'pinching' && e.touches.length === 2) {
+				e.preventDefault(); 
+				// NEW: Capture the returned scale to track for the next frame
+				lastIntendedScale = this.executeTouchZoom(e.touches[0], e.touches[1], initialScale, initialPinchDistance, panzoomInstance, lastIntendedScale);
 
-                this.updateDebug({
-                    Event: 'TouchMove (Pinch)',
-                    ActualScale: panzoomInstance.getScale()
-                });
+				this.updateDebug({
+					Event: 'TouchMove (Pinch)',
+					ActualScale: panzoomInstance.getScale()
+				});
 
-            } else if (touchState === 'panning' && e.touches.length === 1) {
+			} else if (touchState === 'panning' && e.touches.length === 1) {
                 e.preventDefault(); 
                 
                 const currentX = e.touches[0].clientX;
@@ -329,10 +334,10 @@ export default class MyPlugin extends Plugin {
                 const direction = event.deltaY < 0 ? 1 : -1;
                 
                 const newScale = currentScale * Math.exp(direction * (dynamicStep * frameIntensity));
-                const center = { clientX: event.clientX, clientY: event.clientY };
-                
-                // Pass to our unified snap function
-                this.applyZoomAndSnap(panzoomInstance, newScale, center);
+				const center = { clientX: event.clientX, clientY: event.clientY };
+				
+				// For the wheel, the current real scale serves perfectly as the intended trajectory
+				this.applyZoomAndSnap(panzoomInstance, newScale, currentScale, center);
                 
                 this.updateDebug({
                     Event: 'Trackpad/Wheel Zoom',
