@@ -164,10 +164,15 @@ export default class MyPlugin extends Plugin {
         const scale = panzoomInstance.getScale();
         const damping = this.settings.scrollDamping || 1;
         
-        const adjustedDeltaX = Math.round((rawDeltaX / scale) * damping);
-        const adjustedDeltaY = Math.round((rawDeltaY / scale) * damping);
+        const adjustedDeltaX = (rawDeltaX / scale) * damping;
+        const adjustedDeltaY = (rawDeltaY / scale) * damping;
         
         const direction = this.getPanDirection(adjustedDeltaX, adjustedDeltaY);
+        this.updateDebug({
+            Event: 'PanDirection',
+            ActualScale: direction
+        });
+        console.log('pan direction', direction)
 
         if (direction === 'horizontal') {
             const currentPan = panzoomInstance.getPan();
@@ -188,6 +193,7 @@ export default class MyPlugin extends Plugin {
 		if (newScale <= MyPlugin.SNAP_SCALE && !isZoomingIn) {
 			if (panzoomInstance.getOptions().contain !== 'inside') {
 				panzoomInstance.setOptions({ contain: 'inside' });
+                console.log('contain -> inside', { newScale, currentPan: panzoomInstance.getPan() });
 			}
 			// Only trigger the snap if we aren't already at 1 to save performance
 			if (panzoomInstance.getScale() !== 1) {
@@ -197,6 +203,7 @@ export default class MyPlugin extends Plugin {
 		} else {
 			if (panzoomInstance.getOptions().contain !== 'outside') {
 				panzoomInstance.setOptions({ contain: 'outside' });
+                console.log('contain -> outside', { newScale, currentPan: panzoomInstance.getPan() });
 			}
 			panzoomInstance.zoomToPoint(newScale, center, { animate: false });
 		}
@@ -311,6 +318,7 @@ export default class MyPlugin extends Plugin {
                 const finalDeltaY = rawDeltaY * panMultiplier;
 
                 this.executePanOrScroll(finalDeltaX, finalDeltaY, panzoomInstance, getScroller());
+                
                 lastPanPosition = { x: currentX, y: currentY };
 
                 this.updateDebug({
