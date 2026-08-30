@@ -134,8 +134,9 @@ export default class PanzoomPlugin extends Plugin {
             }
         };
 
-        // --- MOBILE TOUCH LOGIC ---
+// --- MOBILE TOUCH LOGIC ---
         let initialPinchDistance = 0;
+        let initialScale = 1; // NEW: Track the scale at the exact moment the pinch starts
         let lastPanPosition = { x: 0, y: 0 };
         let touchState: 'none' | 'panning' | 'pinching' = 'none';
 
@@ -146,6 +147,7 @@ export default class PanzoomPlugin extends Plugin {
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 initialPinchDistance = Math.hypot(dx, dy);
+                initialScale = panzoom.getScale(); // Record scale at start of pinch
             } else if (e.touches.length === 1 && panzoom.getScale() > 1.01) {
                 touchState = 'panning';
                 lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -157,7 +159,7 @@ export default class PanzoomPlugin extends Plugin {
                 Event: 'TouchStart',
                 Fingers: e.touches.length,
                 State: touchState,
-                Scale: panzoom.getScale()
+                StartScale: initialScale
             });
         };
 
@@ -173,18 +175,17 @@ export default class PanzoomPlugin extends Plugin {
                     clientY: (e.touches[0].clientY + e.touches[1].clientY) / 2
                 };
 
-                const currentScale = panzoom.getScale();
+                // Calculate the multiplier based on the ENTIRE pinch gesture, not just the last frame
                 const zoomFactor = distance / initialPinchDistance;
-                const newScale = currentScale * zoomFactor;
+                const newScale = initialScale * zoomFactor;
                 
-                // Use built-in zoomToPoint
                 panzoom.zoomToPoint(newScale, center, { animate: false });
                 
-                initialPinchDistance = distance; // Reset distance for smooth continuous zooming
+                // CRITICAL FIX: We no longer reset initialPinchDistance here!
 
                 this.updateDebug({
                     Event: 'TouchMove (Pinch)',
-                    ZoomFactor: zoomFactor,
+                    TotalZoomFactor: zoomFactor,
                     TargetScale: newScale,
                     ActualScale: panzoom.getScale()
                 });
@@ -206,17 +207,9 @@ export default class PanzoomPlugin extends Plugin {
                 );
                 
                 lastPanPosition = { x: currentX, y: currentY };
-
-                this.updateDebug({
-                    Event: 'TouchMove (Pan)',
-                    DeltaX: deltaX,
-                    DeltaY: deltaY,
-                    PanX: currentPan.x,
-                    PanY: currentPan.y
-                });
             }
         };
-
+        
         const handleTouchEnd = (e: TouchEvent) => {
             if (e.touches.length < 2 && touchState === 'pinching') {
                 if (e.touches.length === 1 && panzoom.getScale() > 1.01) {
