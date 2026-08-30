@@ -198,6 +198,7 @@ export default class MyPlugin extends Plugin {
     ): EventHandlers {
         
         let initialPinchDistance = 0;
+        let initialScale = 1; // NEW: Track the scale at the exact moment the pinch starts
         let lastPanPosition = { x: 0, y: 0 };
         let touchState: 'none' | 'panning' | 'pinching' = 'none';
 
@@ -208,6 +209,7 @@ export default class MyPlugin extends Plugin {
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 initialPinchDistance = Math.hypot(dx, dy);
+				initialScale = panzoom.getScale(); // Record scale at start of pinch
             } else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
                 touchState = 'panning';
                 lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -219,7 +221,7 @@ export default class MyPlugin extends Plugin {
                 Event: 'TouchStart',
                 Fingers: e.touches.length,
                 State: touchState,
-                Scale: panzoomInstance.getScale()
+                StartScale: initialScale
             });
         };
 
@@ -235,29 +237,28 @@ export default class MyPlugin extends Plugin {
                     clientY: (e.touches[0].clientY + e.touches[1].clientY) / 2
                 };
 
-                const currentScale = panzoomInstance.getScale();
+                // Calculate the multiplier based on the ENTIRE pinch gesture, not just the last frame
                 const zoomFactor = distance / initialPinchDistance;
-                const newScale = currentScale * zoomFactor;
+                const newScale = initialScale * zoomFactor;
                 
-                panzoomInstance.zoomToPoint(newScale, center, { animate: false });
-                initialPinchDistance = distance; 
+                panzoomInstance.zoomToPoint(newScale, center, { animate: false });                // CRITICAL FIX: We no longer reset initialPinchDistance here!
+
+                // CRITICAL FIX: We no longer reset initialPinchDistance here!
 
                 this.updateDebug({
                     Event: 'TouchMove (Pinch)',
-                    ZoomFactor: zoomFactor,
-                    Scale: newScale
+                    TotalZoomFactor: zoomFactor,
+                    TargetScale: newScale,
+                    ActualScale: panzoomInstance.getScale()
                 });
 
             } else if (touchState === 'panning' && e.touches.length === 1) {
                 e.preventDefault(); 
-                const currentX = e.touches[0].clientX;
-                const currentY = e.touches[0].clientY;
+                const rawDeltaX = e.touches[0].clientX;
+                const rawDeltaY = e.touches[0].clientY;
                 
                 const scale = panzoomInstance.getScale();
-                
-                const rawDeltaX = lastPanPosition.x - currentX;
-                const rawDeltaY = lastPanPosition.y - currentY;
-                
+
                 const damping = this.settings.scrollDamping || 1;
                 const adjustedDeltaX = Math.round((rawDeltaX / scale) * damping);
                 const adjustedDeltaY = Math.round((rawDeltaY / scale) * damping);
@@ -273,7 +274,7 @@ export default class MyPlugin extends Plugin {
                     this.applyScrolling(0, adjustedDeltaY, scroller);
                 }
                 
-                lastPanPosition = { x: currentX, y: currentY };
+                lastPanPosition = { x: rawDeltaX, y: rawDeltaY };
 
                 this.updateDebug({
                     Event: 'TouchMove (Pan)',
