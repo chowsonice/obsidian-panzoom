@@ -11,7 +11,7 @@ export interface PanzoomSettings {
 export const DEFAULT_SETTINGS: PanzoomSettings = {
 	minScale: 1,
 	maxScale: 5,
-	zoomStep: 0.1,
+	zoomStep: 0.2,
 	scrollDamping: 0.6,
 };
 
