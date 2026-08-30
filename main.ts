@@ -31,12 +31,15 @@ export default class MyPlugin extends Plugin {
     private readonly viewContentMap = new Map<HTMLElement, ViewContentData>();
     private observer: MutationObserver | null = null;
     private readonly debouncedReinitialize: () => void;
-
+    
 	private getPanDirection(deltaX: number, deltaY: number): 'horizontal' | 'vertical' | 'none' {
 		if (deltaX === 0 && deltaY === 0) return 'none';
 		// If the horizontal movement is greater than vertical, they are panning horizontally
 		return Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
 	}
+
+    // Debugger Element
+    private debugEl: HTMLElement | null = null;
 
     // Configuration constants
     private get panzoomConfig(): PanzoomConfig {
@@ -55,7 +58,6 @@ export default class MyPlugin extends Plugin {
         childList: true,
         subtree: true
     };
-
     // Zoom thresholds for contain switching
     private static readonly ZOOM_THRESHOLD_LOW = 1.1;
     private static readonly ZOOM_THRESHOLD_HIGH = 1.2;
@@ -79,12 +81,49 @@ export default class MyPlugin extends Plugin {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new PanzoomSettingTab(this.app, this));
 
+        this.initDebugOverlay();
+
         this.app.workspace.onLayoutReady(() => {
             this.initializeAllPanzoom();
             this.setupObserver();
             this.setupWorkspaceListeners();
         });
     }
+
+    // --- VISUAL DEBUGGER LOGIC ---
+    private initDebugOverlay() {
+        this.debugEl = document.createElement('div');
+        Object.assign(this.debugEl.style, {
+            position: 'absolute',
+            bottom: '20px',
+            right: '20px',
+            background: 'rgba(0, 0, 0, 0.85)',
+            color: '#0f0',
+            padding: '12px',
+            borderRadius: '8px',
+            zIndex: '99999',
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            pointerEvents: 'none',
+            whiteSpace: 'pre-wrap',
+            minWidth: '200px'
+        });
+        document.body.appendChild(this.debugEl);
+        this.updateDebug('Waiting for touch events...');
+    }
+
+    private updateDebug(message: string | object) {
+        if (!this.debugEl) return;
+        if (typeof message === 'object') {
+            this.debugEl.textContent = Object.entries(message)
+                .map(([k, v]) => `${k}: ${typeof v === 'number' ? v.toFixed(3) : v}`)
+                .join('\n');
+            console.log('Panzoom Debug:', message);
+        } else {
+            this.debugEl.textContent = message;
+        }
+    }
+    // ----------------------------
 
     private initializeAllPanzoom(): void {
         const viewContents = this.getAllVisibleViewContents();
@@ -101,7 +140,6 @@ export default class MyPlugin extends Plugin {
                 if (!(element instanceof HTMLElement)) return false;
                 if (!this.isElementVisible(element)) return false;
                 
-                // Exclure les leafs PDF - vérifier si le parent a data-type="pdf"
                 const leafContent = element.parentElement;
                 if (leafContent && 
                     leafContent.classList.contains('workspace-leaf-content') && 
@@ -124,15 +162,20 @@ export default class MyPlugin extends Plugin {
         return dataMode === 'preview' ? 'preview' : 'edit';
     }
 
+    private getPanDirection(deltaX: number, deltaY: number): 'horizontal' | 'vertical' | 'none' {
+        if (deltaX === 0 && deltaY === 0) return 'none';
+        return Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
+    }
+
     private createPanzoomInstance(viewContent: HTMLElement): void {
         if (!viewContent || this.viewContentMap.has(viewContent)) return;
 
         try {
-			// 1. ADD THESE CSS RULES BEFORE PANZOOM INITIALIZES
-			viewContent.style.transformOrigin = '0 0';
+            // Apply GPU Acceleration and Origin Fixes
+            viewContent.style.transformOrigin = '0 0';
 			viewContent.style.willChange = 'transform'; // Forces hardware acceleration
 			viewContent.style.backfaceVisibility = 'hidden'; // Prevents pixel rounding glitches
-			
+
             const panzoomInstance = Panzoom(viewContent, this.panzoomConfig);
             const cmScroller = viewContent.querySelector(MyPlugin.CM_SCROLLER_SELECTOR) as HTMLElement;
             const previewScroller = viewContent.querySelector('.' + MyPlugin.PREVIEW_VIEW_CLASS) as HTMLElement;
@@ -159,7 +202,6 @@ export default class MyPlugin extends Plugin {
         viewContent: HTMLElement
     ): EventHandlers {
         
-        // --- TOUCH STATE CLOSURE ---
         let initialPinchDistance = 0;
         let lastPanPosition = { x: 0, y: 0 };
         let touchState: 'none' | 'panning' | 'pinching' = 'none';
@@ -177,6 +219,13 @@ export default class MyPlugin extends Plugin {
             } else {
                 touchState = 'none';
             }
+
+            this.updateDebug({
+                Event: 'TouchStart',
+                Fingers: e.touches.length,
+                State: touchState,
+                Scale: panzoomInstance.getScale()
+            });
         };
 
         const handleTouchMove = (e: TouchEvent) => {
@@ -198,34 +247,46 @@ export default class MyPlugin extends Plugin {
                 panzoomInstance.zoomToPoint(newScale, center, { animate: false });
                 initialPinchDistance = distance; 
 
+                this.updateDebug({
+                    Event: 'TouchMove (Pinch)',
+                    ZoomFactor: zoomFactor,
+                    Scale: newScale
+                });
+
             } else if (touchState === 'panning' && e.touches.length === 1) {
-				e.preventDefault(); 
-				const currentX = e.touches[0].clientX;
-				const currentY = e.touches[0].clientY;
-				
-				const scale = panzoomInstance.getScale();
-				
-				const rawDeltaX = lastPanPosition.x - currentX;
-				const rawDeltaY = lastPanPosition.y - currentY;
-				
-				const damping = this.settings.scrollDamping || 1;
-				const adjustedDeltaX = Math.round((rawDeltaX / scale) * damping);
-				const adjustedDeltaY = Math.round((rawDeltaY / scale) * damping);
-				
-				const mode = this.getViewMode(viewContent);
-				const scroller = mode === 'preview' ? previewScroller : cmScroller;
+                e.preventDefault(); 
+                const currentX = e.touches[0].clientX;
+                const currentY = e.touches[0].clientY;
+                
+                const scale = panzoomInstance.getScale();
+                
+                const rawDeltaX = lastPanPosition.x - currentX;
+                const rawDeltaY = lastPanPosition.y - currentY;
+                
+                const damping = this.settings.scrollDamping || 1;
+                const adjustedDeltaX = Math.round((rawDeltaX / scale) * damping);
+                const adjustedDeltaY = Math.round((rawDeltaY / scale) * damping);
+                
+                const mode = this.getViewMode(viewContent);
+                const scroller = mode === 'preview' ? previewScroller : cmScroller;
 
-				// Detect primary direction
-				const direction = this.getPanDirection(rawDeltaX, rawDeltaY);
+                const direction = this.getPanDirection(rawDeltaX, rawDeltaY);
 
-				if (direction === 'horizontal') {
-					this.applyPanning(adjustedDeltaX, 0, panzoomInstance);
-				} else if (direction === 'vertical') {
-					this.applyScrolling(0, adjustedDeltaY, scroller);
-				}
-				
-				lastPanPosition = { x: currentX, y: currentY };
-			}
+                if (direction === 'horizontal') {
+                    this.applyPanning(adjustedDeltaX, 0, panzoomInstance);
+                } else if (direction === 'vertical') {
+                    this.applyScrolling(0, adjustedDeltaY, scroller);
+                }
+                
+                lastPanPosition = { x: currentX, y: currentY };
+
+                this.updateDebug({
+                    Event: 'TouchMove (Pan)',
+                    Dir: direction,
+                    dX: adjustedDeltaX,
+                    dY: adjustedDeltaY
+                });
+            }
         };
 
         const handleTouchEnd = (e: TouchEvent) => {
@@ -239,6 +300,12 @@ export default class MyPlugin extends Plugin {
             } else if (e.touches.length === 0) {
                 touchState = 'none';
             }
+
+            this.updateDebug({
+                Event: 'TouchEnd',
+                Fingers: e.touches.length,
+                NewState: touchState
+            });
         };
 
         return {
@@ -291,23 +358,21 @@ export default class MyPlugin extends Plugin {
     }
 
     private handlePanAndScroll(event: WheelEvent, panzoomInstance: PanzoomObject, scroller: HTMLElement | null): void {
-		const { deltaX = 0, deltaY = 0 } = event;
-		const scale = panzoomInstance.getScale();
-		const damping = this.settings.scrollDamping || 1;
-		
-		const adjustedDeltaX = Math.round((deltaX / scale) * damping);
-		const adjustedDeltaY = Math.round((deltaY / scale) * damping);
-		
-		const direction = this.getPanDirection(adjustedDeltaX, adjustedDeltaY);
+        const { deltaX = 0, deltaY = 0 } = event;
+        const scale = panzoomInstance.getScale();
+        const damping = this.settings.scrollDamping || 1;
+        
+        const adjustedDeltaX = Math.round((deltaX / scale) * damping);
+        const adjustedDeltaY = Math.round((deltaY / scale) * damping);
+        
+        const direction = this.getPanDirection(adjustedDeltaX, adjustedDeltaY);
 
-		if (direction === 'horizontal') {
-			// Only pan the zoom container horizontally
-			this.applyPanning(adjustedDeltaX, 0, panzoomInstance);
-		} else if (direction === 'vertical') {
-			// Only scroll the document vertically
-			this.applyScrolling(0, adjustedDeltaY, scroller);
-		}
-	}
+        if (direction === 'horizontal') {
+            this.applyPanning(adjustedDeltaX, 0, panzoomInstance);
+        } else if (direction === 'vertical') {
+            this.applyScrolling(0, adjustedDeltaY, scroller);
+        }
+    }
 
     private applyPanning(deltaX: number, deltaY: number, panzoomInstance: PanzoomObject): void {
         const currentPan = panzoomInstance.getPan();
@@ -331,7 +396,6 @@ export default class MyPlugin extends Plugin {
         viewContent.addEventListener('touchstart', eventHandlers.handleTouchStart, { passive: false });
         viewContent.addEventListener('touchmove', eventHandlers.handleTouchMove, { passive: false });
         viewContent.addEventListener('touchend', eventHandlers.handleTouchEnd, { passive: false });
-        // Handle touch canceling (e.g. user minimizing app while dragging)
         viewContent.addEventListener('touchcancel', eventHandlers.handleTouchEnd, { passive: false }); 
     }
 
@@ -400,6 +464,10 @@ export default class MyPlugin extends Plugin {
         this.observer?.disconnect();
         this.cleanup();
         this.observer = null;
+
+        if (this.debugEl && this.debugEl.parentElement) {
+            this.debugEl.parentElement.removeChild(this.debugEl);
+        }
     }
 
     async saveSettings(): Promise<void> {
