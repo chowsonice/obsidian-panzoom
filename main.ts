@@ -180,22 +180,38 @@ export default class MyPlugin extends Plugin {
 
     /** Translates a two-finger pinch gesture into a Panzoom zoom operation */
     private executeTouchZoom(touch1: Touch, touch2: Touch, initialScale: number, initialPinchDistance: number, panzoomInstance: PanzoomObject): void {
-        const dx = touch1.clientX - touch2.clientX;
-        const dy = touch1.clientY - touch2.clientY;
-        const currentDistance = Math.hypot(dx, dy);
-        
-        const center = {
-            clientX: (touch1.clientX + touch2.clientX) / 2,
-            clientY: (touch1.clientY + touch2.clientY) / 2
-        };
+		const dx = touch1.clientX - touch2.clientX;
+		const dy = touch1.clientY - touch2.clientY;
+		const currentDistance = Math.hypot(dx, dy);
+		
+		const center = {
+			clientX: (touch1.clientX + touch2.clientX) / 2,
+			clientY: (touch1.clientY + touch2.clientY) / 2
+		};
 
-        const zoomFactor = currentDistance / initialPinchDistance;
-        const newScale = initialScale * zoomFactor;
-        const isZoomingIn = newScale > panzoomInstance.getScale(); 
-        
-        this.updateContainForZoom(panzoomInstance, isZoomingIn);
-        panzoomInstance.zoomToPoint(newScale, center, { animate: false });
-    }
+		// Calculate how far the fingers have actually moved since the start of the pinch
+		const distanceDelta = Math.abs(currentDistance - initialPinchDistance);
+		
+		// Create a dynamic speed multiplier. 
+		// The multiplier grows as the gesture gets longer (adjust 0.002 to your liking)
+		const dynamicSpeedModifier = 1 + (distanceDelta * 0.002);
+
+		// Standard zoom factor
+		let zoomFactor = currentDistance / initialPinchDistance;
+		
+		// Apply the dynamic speed
+		if (zoomFactor > 1) {
+			zoomFactor *= dynamicSpeedModifier; // Zoom in faster
+		} else if (zoomFactor < 1) {
+			zoomFactor /= dynamicSpeedModifier; // Zoom out faster
+		}
+
+		const newScale = initialScale * zoomFactor;
+		const isZoomingIn = newScale > panzoomInstance.getScale(); 
+		
+		this.updateContainForZoom(panzoomInstance, isZoomingIn);
+		panzoomInstance.zoomToPoint(newScale, center, { animate: false });
+	}
 
     /** Manages the 'contain' rule for both Touch Zoom and Mouse Wheel Zoom */
     private updateContainForZoom(panzoomInstance: PanzoomObject, isZoomingIn: boolean): void {
@@ -222,9 +238,11 @@ export default class MyPlugin extends Plugin {
         let initialScale = 1; 
         let lastPanPosition = { x: 0, y: 0 };
         let touchState: 'none' | 'panning' | 'pinching' = 'none';
+		// -- Trackpad / Wheel State --
+		let wheelGestureAccumulator = 0;
+		let wheelGestureTimeout: ReturnType<typeof setTimeout> | null = null;
 
-        const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
-
+		const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
         const handleTouchStart = (e: TouchEvent) => {
             if (e.touches.length === 2) {
                 touchState = 'pinching';
@@ -283,18 +301,57 @@ export default class MyPlugin extends Plugin {
             }
         };
 
-        const handleWheel = (event: WheelEvent) => {
-            if (!panzoomInstance) return;
+		const handleWheel = (event: WheelEvent) => {
+			if (!panzoomInstance) return;
 
-            if (event.ctrlKey) {
-                event.preventDefault();
-                this.updateContainForZoom(panzoomInstance, event.deltaY < 0);
-                panzoomInstance.zoomWithWheel(event);
-            } else if (panzoomInstance.getScale() > 1) {
-                event.preventDefault();
-                this.executePanOrScroll(event.deltaX, event.deltaY, panzoomInstance, getScroller());
-            }
-        };
+			if (event.ctrlKey) {
+				event.preventDefault();
+				this.updateContainForZoom(panzoomInstance, event.deltaY < 0);
+				
+				// 1. Accumulate the length of the trackpad gesture
+				wheelGestureAccumulator += Math.abs(event.deltaY);
+				
+				// 2. Reset the gesture if the user stops scrolling for 150ms
+				if (wheelGestureTimeout) clearTimeout(wheelGestureTimeout);
+				wheelGestureTimeout = setTimeout(() => {
+					wheelGestureAccumulator = 0;
+				}, 150);
+
+				// 3. Calculate dynamic step based on the accumulated gesture length
+				const baseStep = this.settings.zoomStep;
+				
+				// The longer the gesture, the higher the multiplier (adjust 0.001 to taste)
+				const lengthMultiplier = 1 + (wheelGestureAccumulator * 0.3); 
+				
+				let dynamicStep = baseStep * lengthMultiplier;
+				// Clamp it so it doesn't scale into infinity on very long gestures
+				dynamicStep = Math.min(Math.max(dynamicStep, 0.01), 1); 
+				
+				// 4. Normalize per-frame intensity
+				// A standard mouse wheel sends deltaY of ~100. Trackpads send small values (e.g., 2 to 20).
+				// Normalizing this prevents trackpads from zooming too fast per-frame.
+				const frameIntensity = Math.abs(event.deltaY) / 100;
+				
+				const currentScale = panzoomInstance.getScale();
+				const direction = event.deltaY < 0 ? 1 : -1;
+				
+				// 5. Apply the combined logic
+				const newScale = currentScale * Math.exp(direction * (dynamicStep * frameIntensity));
+				
+				const center = { clientX: event.clientX, clientY: event.clientY };
+				panzoomInstance.zoomToPoint(newScale, center, { animate: false });
+				
+				this.updateDebug({
+					Event: 'Trackpad Zoom',
+					GestureLength: Math.round(wheelGestureAccumulator),
+					DynamicStep: dynamicStep.toFixed(4)
+				});
+
+			} else if (panzoomInstance.getScale() > 1) {
+				event.preventDefault();
+				this.executePanOrScroll(event.deltaX, event.deltaY, panzoomInstance, getScroller());
+			}
+		};
 
         return { handleWheel, handleTouchStart, handleTouchMove, handleTouchEnd };
     }
