@@ -163,7 +163,7 @@ export default class PanzoomPlugin extends Plugin {
             });
         };
 
-        const handleTouchMove = (e: TouchEvent) => {
+const handleTouchMove = (e: TouchEvent) => {
             if (touchState === 'pinching' && e.touches.length === 2) {
                 e.preventDefault(); 
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -175,19 +175,29 @@ export default class PanzoomPlugin extends Plugin {
                     clientY: (e.touches[0].clientY + e.touches[1].clientY) / 2
                 };
 
-                // Calculate the multiplier based on the ENTIRE pinch gesture, not just the last frame
                 const zoomFactor = distance / initialPinchDistance;
                 const newScale = initialScale * zoomFactor;
                 
+                // --- CRITICAL FIX: CONTAINMENT TOGGLING ---
+                // We must switch to contain: 'outside' so Panzoom actually allows the element to grow
+                const currentScale = panzoom.getScale();
+                const isZoomingIn = newScale > currentScale;
+                const currentContain = panzoom.getOptions().contain;
+
+                if (currentScale <= PanzoomPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
+                    panzoom.setOptions({ contain: 'outside' });
+                } else if (currentScale <= PanzoomPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
+                    panzoom.setOptions({ contain: 'inside' });
+                }
+                // ------------------------------------------
+
                 panzoom.zoomToPoint(newScale, center, { animate: false });
                 
-                // CRITICAL FIX: We no longer reset initialPinchDistance here!
-
                 this.updateDebug({
                     Event: 'TouchMove (Pinch)',
                     TotalZoomFactor: zoomFactor,
                     TargetScale: newScale,
-                    ActualScale: panzoom.getScale()
+                    ActualScale: panzoom.getScale() // This should now successfully follow TargetScale!
                 });
 
             } else if (touchState === 'panning' && e.touches.length === 1) {
@@ -209,7 +219,7 @@ export default class PanzoomPlugin extends Plugin {
                 lastPanPosition = { x: currentX, y: currentY };
             }
         };
-        
+ 
         const handleTouchEnd = (e: TouchEvent) => {
             if (e.touches.length < 2 && touchState === 'pinching') {
                 if (e.touches.length === 1 && panzoom.getScale() > 1.01) {
