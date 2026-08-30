@@ -17,6 +17,7 @@ export default class PanzoomPlugin extends Plugin {
     settings: PanzoomSettings;
     private readonly activeLeaves = new Map<WorkspaceLeaf, LeafPanzoomData>();
     private readonly debouncedRefresh: () => void;
+    private debugEl: HTMLElement | null = null; // Visual Debugger Element
 
     private static readonly ZOOM_THRESHOLD_LOW = 1.1;
     private static readonly ZOOM_THRESHOLD_HIGH = 1.2;
@@ -29,6 +30,8 @@ export default class PanzoomPlugin extends Plugin {
     async onload(): Promise<void> {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new PanzoomSettingTab(this.app, this));
+        
+        this.initDebugOverlay(); // Start visual debugger
 
         this.app.workspace.onLayoutReady(() => {
             this.refreshLeaves();
@@ -36,6 +39,41 @@ export default class PanzoomPlugin extends Plugin {
             this.registerEvent(this.app.workspace.on('active-leaf-change', this.debouncedRefresh));
         });
     }
+
+    // --- VISUAL DEBUGGER LOGIC ---
+    private initDebugOverlay() {
+        this.debugEl = document.createElement('div');
+        Object.assign(this.debugEl.style, {
+            position: 'absolute',
+            bottom: '20px',
+            right: '20px',
+            background: 'rgba(0, 0, 0, 0.85)',
+            color: '#0f0',
+            padding: '12px',
+            borderRadius: '8px',
+            zIndex: '99999',
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            pointerEvents: 'none', // So it doesn't block touches
+            whiteSpace: 'pre-wrap',
+            minWidth: '200px'
+        });
+        document.body.appendChild(this.debugEl);
+        this.updateDebug('Waiting for touch events...');
+    }
+
+    private updateDebug(message: string | object) {
+        if (!this.debugEl) return;
+        if (typeof message === 'object') {
+            this.debugEl.textContent = Object.entries(message)
+                .map(([k, v]) => `${k}: ${typeof v === 'number' ? v.toFixed(3) : v}`)
+                .join('\n');
+            console.log('Panzoom Debug:', message);
+        } else {
+            this.debugEl.textContent = message;
+        }
+    }
+    // ----------------------------
 
     private refreshLeaves(): void {
         const currentLeaves = new Set<WorkspaceLeaf>();
@@ -61,7 +99,7 @@ export default class PanzoomPlugin extends Plugin {
         if (!targetEl) return;
 
         const panzoom = Panzoom(targetEl, {
-            noBind: true, // CRITICAL: Stop Panzoom from breaking native Obsidian mobile gestures
+            noBind: true, 
             minScale: this.settings.minScale,
             maxScale: this.settings.maxScale,
             contain: 'inside',
@@ -103,42 +141,56 @@ export default class PanzoomPlugin extends Plugin {
 
         const handleTouchStart = (e: TouchEvent) => {
             if (e.touches.length === 2) {
-                // 2 Fingers = Pinch to Zoom
                 touchState = 'pinching';
                 e.preventDefault(); 
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 initialPinchDistance = Math.hypot(dx, dy);
             } else if (e.touches.length === 1 && panzoom.getScale() > 1.01) {
-                // 1 Finger + Zoomed In = Pan around
                 touchState = 'panning';
                 lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
             } else {
-                // 1 Finger + Normal Scale = Let Obsidian handle text selection/scrolling
                 touchState = 'none';
             }
+
+            this.updateDebug({
+                Event: 'TouchStart',
+                Fingers: e.touches.length,
+                State: touchState,
+                Scale: panzoom.getScale()
+            });
         };
 
         const handleTouchMove = (e: TouchEvent) => {
             if (touchState === 'pinching' && e.touches.length === 2) {
-                e.preventDefault(); // Stop native scrolling while zooming
+                e.preventDefault(); 
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 const distance = Math.hypot(dx, dy);
                 
-                // Zoom into the center point between the two fingers
                 const center = {
                     clientX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
                     clientY: (e.touches[0].clientY + e.touches[1].clientY) / 2
                 };
 
-                const scale = panzoom.getScale();
+                const currentScale = panzoom.getScale();
                 const zoomFactor = distance / initialPinchDistance;
-                panzoom.zoomToPoint(scale * zoomFactor, center, { animate: false });
+                const newScale = currentScale * zoomFactor;
                 
-                initialPinchDistance = distance;
+                // Use built-in zoomToPoint
+                panzoom.zoomToPoint(newScale, center, { animate: false });
+                
+                initialPinchDistance = distance; // Reset distance for smooth continuous zooming
+
+                this.updateDebug({
+                    Event: 'TouchMove (Pinch)',
+                    ZoomFactor: zoomFactor,
+                    TargetScale: newScale,
+                    ActualScale: panzoom.getScale()
+                });
+
             } else if (touchState === 'panning' && e.touches.length === 1) {
-                e.preventDefault(); // Stop native scrolling while panning
+                e.preventDefault(); 
                 const currentX = e.touches[0].clientX;
                 const currentY = e.touches[0].clientY;
                 
@@ -154,11 +206,18 @@ export default class PanzoomPlugin extends Plugin {
                 );
                 
                 lastPanPosition = { x: currentX, y: currentY };
+
+                this.updateDebug({
+                    Event: 'TouchMove (Pan)',
+                    DeltaX: deltaX,
+                    DeltaY: deltaY,
+                    PanX: currentPan.x,
+                    PanY: currentPan.y
+                });
             }
         };
 
         const handleTouchEnd = (e: TouchEvent) => {
-            // Clean up state when fingers leave the screen
             if (e.touches.length < 2 && touchState === 'pinching') {
                 if (e.touches.length === 1 && panzoom.getScale() > 1.01) {
                     touchState = 'panning';
@@ -169,6 +228,12 @@ export default class PanzoomPlugin extends Plugin {
             } else if (e.touches.length === 0) {
                 touchState = 'none';
             }
+
+            this.updateDebug({
+                Event: 'TouchEnd',
+                RemainingFingers: e.touches.length,
+                NewState: touchState
+            });
         };
 
         // Bind all events
@@ -198,6 +263,10 @@ export default class PanzoomPlugin extends Plugin {
     onunload(): void {
         for (const [leaf, data] of this.activeLeaves) {
             this.detachPanzoom(leaf, data);
+        }
+        // Remove visual debugger
+        if (this.debugEl && this.debugEl.parentElement) {
+            this.debugEl.parentElement.removeChild(this.debugEl);
         }
     }
 
