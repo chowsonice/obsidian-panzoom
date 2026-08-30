@@ -18,6 +18,7 @@ export default class PanzoomPlugin extends Plugin {
 
     constructor(app: App, manifest: any) {
         super(app, manifest);
+        // Debounce the refresh to avoid performance drops during rapid layout changes
         this.debouncedRefresh = debounce(this.refreshLeaves.bind(this), 100, true);
     }
 
@@ -27,6 +28,8 @@ export default class PanzoomPlugin extends Plugin {
 
         this.app.workspace.onLayoutReady(() => {
             this.refreshLeaves();
+            
+            // Listen to standard Obsidian workspace events instead of a global MutationObserver
             this.registerEvent(this.app.workspace.on('layout-change', this.debouncedRefresh));
             this.registerEvent(this.app.workspace.on('active-leaf-change', this.debouncedRefresh));
         });
@@ -38,13 +41,24 @@ export default class PanzoomPlugin extends Plugin {
         this.app.workspace.iterateAllLeaves((leaf) => {
             if (leaf.view instanceof MarkdownView) {
                 currentLeaves.add(leaf);
+                
                 if (!this.activeLeaves.has(leaf)) {
                     this.attachPanzoom(leaf, leaf.view);
+                } else {
+                    // Update existing Panzoom instance based on current view mode
+                    const data = this.activeLeaves.get(leaf);
+                    const isPreview = leaf.view.getMode() === 'preview';
+                    if (data) {
+                        data.panzoom.setOptions({
+                            // Allow mobile panning in preview, disable in edit for text selection
+                            disablePan: !isPreview 
+                        });
+                    }
                 }
             }
         });
 
-        // Cleanup closed or non-markdown leaves
+        // Cleanup leaves that were closed or are no longer markdown views
         for (const [leaf, data] of this.activeLeaves) {
             if (!currentLeaves.has(leaf)) {
                 this.detachPanzoom(leaf, data);
@@ -56,24 +70,35 @@ export default class PanzoomPlugin extends Plugin {
         const targetEl = view.contentEl;
         if (!targetEl) return;
 
+        const isPreview = view.getMode() === 'preview';
+
         const panzoom = Panzoom(targetEl, {
-            noBind: true,
+            // noBind is omitted so Panzoom binds native touch/pointer events for mobile
             minScale: this.settings.minScale,
             maxScale: this.settings.maxScale,
             contain: 'inside',
             disableZoom: false,
             cursor: 'default',
-            step: this.settings.zoomStep
+            step: this.settings.zoomStep,
+            
+            // Critical for Mobile: prevents native browser swiping from overriding panzoom
+            touchAction: 'none',
+            
+            // Initial pan state based on mode
+            disablePan: !isPreview 
         });
 
+        // Custom Desktop Wheel Logic
         const handleWheel = (event: WheelEvent) => {
             const scale = panzoom.getScale();
 
             if (event.ctrlKey) {
+                // Desktop Zooming
                 event.preventDefault();
                 const isZoomingIn = event.deltaY < 0;
                 const currentContain = panzoom.getOptions().contain;
 
+                // Adjust contain behavior to prevent edge-snapping at low zooms
                 if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_LOW && currentContain === 'inside' && isZoomingIn) {
                     panzoom.setOptions({ contain: 'outside' });
                 } else if (scale <= PanzoomPlugin.ZOOM_THRESHOLD_HIGH && currentContain === 'outside' && !isZoomingIn) {
@@ -82,6 +107,7 @@ export default class PanzoomPlugin extends Plugin {
 
                 panzoom.zoomWithWheel(event);
             } else if (scale > 1) {
+                // Desktop Panning when zoomed in
                 event.preventDefault();
                 const damping = this.settings.scrollDamping ?? 1;
                 const currentPan = panzoom.getPan();
@@ -111,6 +137,8 @@ export default class PanzoomPlugin extends Plugin {
 
     async saveSettings(): Promise<void> {
         await this.saveData(this.settings);
+        
+        // Dynamically update settings without destroying Panzoom state
         for (const { panzoom } of this.activeLeaves.values()) {
             panzoom.setOptions({
                 minScale: this.settings.minScale,
