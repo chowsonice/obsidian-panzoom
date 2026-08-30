@@ -62,7 +62,7 @@ export default class MyPlugin extends Plugin {
     }
 
     private static readonly OBSERVER_CONFIG: MutationObserverInit = { childList: true, subtree: true };
-    private static readonly SNAP_SCALE = 1.1; // Unified snap threshold for all zooming
+    private static readonly SNAP_SCALE = 1.02; // Unified snap threshold for all zooming
     private static readonly REINIT_DELAY = 150; 
     private static readonly VIEW_CONTENT_SELECTOR = '.view-content';
     private static readonly CM_SCROLLER_SELECTOR = '.cm-scroller';
@@ -234,65 +234,89 @@ export default class MyPlugin extends Plugin {
     // INPUT HANDLERS
     // ==========================================
 
-    private createEventHandlers(
-		panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement
-	): EventHandlers {
-		
-		// Touch State Tracking
-		let initialPinchDistance = 0;
-		let initialScale = 1; 
-		let lastPanPosition = { x: 0, y: 0 };
-		let touchState: 'none' | 'panning' | 'pinching' = 'none';
-		let lastIntendedScale = 1; // <-- NEW: Tracks actual finger movement
+	private createEventHandlers(
+        panzoomInstance: PanzoomObject, cmScroller: HTMLElement | null, previewScroller: HTMLElement | null, viewContent: HTMLElement
+    ): EventHandlers {
+        
+        // Touch Zoom State
+        let initialPinchDistance = 0;
+        let initialScale = 1; 
+        let lastPanPosition = { x: 0, y: 0 };
+        let touchState: 'none' | 'panning' | 'pinching' = 'none';
+        let lastIntendedScale = 1; 
 
-		// Trackpad / Wheel State
-		let wheelGestureAccumulator = 0;
-		let wheelGestureTimeout: ReturnType<typeof setTimeout> | null = null;
+        // Trackpad / Wheel Zoom State
+        let wheelGestureAccumulator = 0;
+        let wheelGestureTimeout: ReturnType<typeof setTimeout> | null = null;
+        
+        // Touch Pan State (NEW)
+        let touchPanAccumulator = 0;
+        let touchPanTimeout: ReturnType<typeof setTimeout> | null = null;
 
-		const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
+        const getScroller = () => this.getViewMode(viewContent) === 'preview' ? previewScroller : cmScroller;
 
-		const handleTouchStart = (e: TouchEvent) => {
-			if (e.touches.length === 2) {
-				touchState = 'pinching';
-				e.preventDefault(); 
-				initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-				initialScale = panzoomInstance.getScale(); 
-				lastIntendedScale = initialScale; // <-- NEW: Initialize on touch start
-			} else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
-				touchState = 'panning';
-				lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-			} else {
-				touchState = 'none';
-			}
-		};
+        const handleTouchStart = (e: TouchEvent) => {
+            if (e.touches.length === 2) {
+                touchState = 'pinching';
+                e.preventDefault(); 
+                initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                initialScale = panzoomInstance.getScale(); 
+                lastIntendedScale = initialScale; 
+            } else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
+                touchState = 'panning';
+                lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                touchPanAccumulator = 0; // Reset pan accumulator on new touch
+            } else {
+                touchState = 'none';
+            }
+        };
 
-		const handleTouchMove = (e: TouchEvent) => {
-			if (touchState === 'pinching' && e.touches.length === 2) {
-				e.preventDefault(); 
-				// NEW: Capture the returned scale to track for the next frame
-				lastIntendedScale = this.executeTouchZoom(e.touches[0], e.touches[1], initialScale, initialPinchDistance, panzoomInstance, lastIntendedScale);
+        const handleTouchMove = (e: TouchEvent) => {
+            if (touchState === 'pinching' && e.touches.length === 2) {
+                e.preventDefault(); 
+                lastIntendedScale = this.executeTouchZoom(e.touches[0], e.touches[1], initialScale, initialPinchDistance, panzoomInstance, lastIntendedScale);
 
-				this.updateDebug({
-					Event: 'TouchMove (Pinch)',
-					ActualScale: panzoomInstance.getScale()
-				});
+                this.updateDebug({
+                    Event: 'TouchMove (Pinch)',
+                    ActualScale: panzoomInstance.getScale()
+                });
 
-			} else if (touchState === 'panning' && e.touches.length === 1) {
+            } else if (touchState === 'panning' && e.touches.length === 1) {
                 e.preventDefault(); 
                 
                 const currentX = e.touches[0].clientX;
                 const currentY = e.touches[0].clientY;
                 
-                const deltaX = lastPanPosition.x - currentX;
-                const deltaY = lastPanPosition.y - currentY;
+                const rawDeltaX = lastPanPosition.x - currentX;
+                const rawDeltaY = lastPanPosition.y - currentY;
+                
+                // 1. Calculate how far the finger moved this frame
+                const distanceMoved = Math.hypot(rawDeltaX, rawDeltaY);
+                touchPanAccumulator += distanceMoved;
+                
+                // 2. Reset the pan gesture if movement stops for 100ms
+                if (touchPanTimeout) clearTimeout(touchPanTimeout);
+                touchPanTimeout = setTimeout(() => {
+                    touchPanAccumulator = 0;
+                }, 100);
 
-                this.executePanOrScroll(deltaX, deltaY, panzoomInstance, getScroller());
+                // 3. Create a dynamic multiplier based on swipe length
+                // The multiplier grows as the swipe gets longer (adjust 0.001 to taste)
+                let panMultiplier = 1 + (touchPanAccumulator * 0.001);
+                // Clamp it so it doesn't get wildly out of control on huge swipes (e.g., max 3x speed)
+                panMultiplier = Math.min(panMultiplier, 3); 
+
+                // 4. Apply the multiplier to the deltas
+                const finalDeltaX = rawDeltaX * panMultiplier;
+                const finalDeltaY = rawDeltaY * panMultiplier;
+
+                this.executePanOrScroll(finalDeltaX, finalDeltaY, panzoomInstance, getScroller());
                 lastPanPosition = { x: currentX, y: currentY };
 
                 this.updateDebug({
                     Event: 'TouchMove (Pan)',
-                    dX: deltaX,
-                    dY: deltaY
+                    Accumulator: Math.round(touchPanAccumulator),
+                    Multiplier: panMultiplier.toFixed(2)
                 });
             }
         };
@@ -302,6 +326,7 @@ export default class MyPlugin extends Plugin {
                 if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
                     touchState = 'panning';
                     lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                    touchPanAccumulator = 0; // Reset pan accumulator when transitioning from pinch to pan
                 } else {
                     touchState = 'none';
                 }
@@ -334,10 +359,9 @@ export default class MyPlugin extends Plugin {
                 const direction = event.deltaY < 0 ? 1 : -1;
                 
                 const newScale = currentScale * Math.exp(direction * (dynamicStep * frameIntensity));
-				const center = { clientX: event.clientX, clientY: event.clientY };
-				
-				// For the wheel, the current real scale serves perfectly as the intended trajectory
-				this.applyZoomAndSnap(panzoomInstance, newScale, currentScale, center);
+                const center = { clientX: event.clientX, clientY: event.clientY };
+                
+                this.applyZoomAndSnap(panzoomInstance, newScale, currentScale, center);
                 
                 this.updateDebug({
                     Event: 'Trackpad/Wheel Zoom',
