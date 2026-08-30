@@ -209,7 +209,7 @@ export default class MyPlugin extends Plugin {
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 initialPinchDistance = Math.hypot(dx, dy);
-				initialScale = panzoom.getScale(); // Record scale at start of pinch
+				initialScale = panzoomInstance.getScale(); // Record scale at start of pinch
             } else if (e.touches.length === 1 && panzoomInstance.getScale() > 1.01) {
                 touchState = 'panning';
                 lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
