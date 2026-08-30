@@ -62,7 +62,7 @@ export default class MyPlugin extends Plugin {
     }
 
     private static readonly OBSERVER_CONFIG: MutationObserverInit = { childList: true, subtree: true };
-    private static readonly SNAP_SCALE = 1.05; // Unified snap threshold for all zooming
+    private static readonly SNAP_SCALE = 1; // Unified snap threshold for all zooming
     private static readonly REINIT_DELAY = 150; 
     private static readonly VIEW_CONTENT_SELECTOR = '.view-content';
     private static readonly CM_SCROLLER_SELECTOR = '.cm-scroller';
