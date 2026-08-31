@@ -77,7 +77,7 @@ export default class MyPlugin extends Plugin {
     async onload(): Promise<void> {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new PanzoomSettingTab(this.app, this));
-        this.initDebugOverlay();
+        // this.initDebugOverlay();
 
         this.app.workspace.onLayoutReady(() => {
             this.initializeAllPanzoom();
@@ -96,7 +96,6 @@ export default class MyPlugin extends Plugin {
             whiteSpace: 'pre-wrap', minWidth: '200px'
         });
         document.body.appendChild(this.debugEl);
-        this.updateDebug('Waiting for events...');
     }
 
     private updateDebug(message: string | object) {
@@ -105,7 +104,6 @@ export default class MyPlugin extends Plugin {
             this.debugEl.textContent = Object.entries(message)
                 .map(([k, v]) => `${k}: ${typeof v === 'number' ? v.toFixed(3) : v}`)
                 .join('\n');
-            console.log('Panzoom Debug:', message);
         } else {
             this.debugEl.textContent = message;
         }
@@ -169,12 +167,6 @@ export default class MyPlugin extends Plugin {
         const adjustedDeltaY = (rawDeltaY / scale) * damping;
         
         const direction = this.getPanDirection(adjustedDeltaX, adjustedDeltaY);
-        this.updateDebug({
-            Event: 'PanDirection',
-            ActualScale: direction
-        });
-        console.log('pan direction', direction)
-
         if (direction === 'horizontal') {
             const currentPan = panzoomInstance.getPan();
             panzoomInstance.pan(currentPan.x - adjustedDeltaX, currentPan.y, { relative: false });
@@ -194,7 +186,6 @@ export default class MyPlugin extends Plugin {
 		if (newScale <= MyPlugin.SNAP_SCALE && !isZoomingIn) {
 			if (panzoomInstance.getOptions().contain !== 'inside') {
 				panzoomInstance.setOptions({ contain: 'inside' });
-                console.log('contain -> inside', { newScale, currentPan: panzoomInstance.getPan() });
 			}
 			// Only trigger the snap if we aren't already at 1 to save performance
 			if (panzoomInstance.getScale() !== 1) {
@@ -203,7 +194,6 @@ export default class MyPlugin extends Plugin {
 		} else {
 			if (panzoomInstance.getOptions().contain !== 'outside') {
 				panzoomInstance.setOptions({ contain: 'outside' });
-                console.log('contain -> outside', { newScale, currentPan: panzoomInstance.getPan() });
 			}
 			panzoomInstance.zoomToPoint(newScale, center, { animate: false });
 		}
@@ -282,12 +272,6 @@ export default class MyPlugin extends Plugin {
             if (touchState === 'pinching' && e.touches.length === 2) {
                 e.preventDefault(); 
                 lastIntendedScale = this.executeTouchZoom(e.touches[0], e.touches[1], initialScale, initialPinchDistance, panzoomInstance, lastIntendedScale);
-
-                this.updateDebug({
-                    Event: 'TouchMove (Pinch)',
-                    ActualScale: panzoomInstance.getScale()
-                });
-
             } else if (touchState === 'panning' && e.touches.length === 1) {
                 e.preventDefault(); 
                 
@@ -321,12 +305,6 @@ export default class MyPlugin extends Plugin {
                 this.executePanOrScroll(finalDeltaX, finalDeltaY, panzoomInstance, getScroller());
                 
                 lastPanPosition = { x: currentX, y: currentY };
-
-                this.updateDebug({
-                    Event: 'TouchMove (Pan)',
-                    Accumulator: Math.round(touchPanAccumulator),
-                    Multiplier: panMultiplier.toFixed(2)
-                });
             }
         };
 
@@ -405,13 +383,6 @@ export default class MyPlugin extends Plugin {
                 
                 this.applyZoomAndSnap(panzoomInstance, newScale, currentScale, center);
                 const leaves = this.app.workspace.getLeavesOfType('markdown');
-                
-                this.updateDebug({
-                    Event: 'Trackpad/Wheel Zoom',
-                    GestureLength: Math.round(wheelGestureAccumulator),
-                    DynamicStep: dynamicStep.toFixed(4),
-                    ActualScale: panzoomInstance.getScale()
-                });
 
             } else if (panzoomInstance.getScale() > 1) {
                 event.preventDefault();
