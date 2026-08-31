@@ -305,6 +305,7 @@ export default class MyPlugin extends Plugin {
                 if (touchPanTimeout) clearTimeout(touchPanTimeout);
                 touchPanTimeout = setTimeout(() => {
                     touchPanAccumulator = 0;
+                    requestCmMeasure();
                 }, 100);
 
                 // 3. Create a dynamic multiplier based on swipe length
