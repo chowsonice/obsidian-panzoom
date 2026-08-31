@@ -1,4 +1,4 @@
-import { App, Plugin, debounce } from 'obsidian';
+import { App, Plugin, debounce, MarkdownView } from 'obsidian';
 import Panzoom, { PanzoomObject } from '@panzoom/panzoom';
 import { PanzoomSettings, DEFAULT_SETTINGS, PanzoomSettingTab } from './src/settings';
 
@@ -29,6 +29,7 @@ interface ViewContentData {
 function getScreenDirection(): 'horizontal' | 'vertical' {
     return window.innerWidth > window.innerHeight ? 'horizontal' : 'vertical';
 }
+
 
 export default class MyPlugin extends Plugin {
     settings: PanzoomSettings;
@@ -198,7 +199,6 @@ export default class MyPlugin extends Plugin {
 			// Only trigger the snap if we aren't already at 1 to save performance
 			if (panzoomInstance.getScale() !== 1) {
 				panzoomInstance.zoom(1, { animate: false });
-				panzoomInstance.pan(0, 0, { animate: false });
 			}
 		} else {
 			if (panzoomInstance.getOptions().contain !== 'outside') {
@@ -343,6 +343,37 @@ export default class MyPlugin extends Plugin {
             }
         };
 
+        const requestCmMeasure = () => {
+            const leaves = this.app.workspace.getLeavesOfType('markdown');
+            for (const leaf of leaves) {
+                if (leaf.view instanceof MarkdownView && leaf.view.containerEl.contains(viewContent)) {
+                    const cmEditorView = (leaf.view.editor as any)?.cm;
+                    if (cmEditorView) {
+                        const scroller = cmEditorView.scrollDOM;
+                        const scrollTop = scroller.scrollTop;
+                        const scrollLeft = scroller.scrollLeft;
+
+                        // prevent CSS smooth-scroll from animating the correction
+                        const prevBehavior = scroller.style.scrollBehavior;
+                        scroller.style.scrollBehavior = 'auto';
+
+                        cmEditorView.requestMeasure();
+
+                        // CM's requestMeasure write callback is scheduled via rAF.
+                        // Since we call requestMeasure() FIRST, its rAF callback
+                        // is registered before ours, so it runs first within the
+                        // same frame — meaning we restore scroll BEFORE this
+                        // frame paints. No visible intermediate state.
+                        requestAnimationFrame(() => {
+                            scroller.scrollTop = scrollTop;
+                            scroller.scrollLeft = scrollLeft;
+                            scroller.style.scrollBehavior = prevBehavior;
+                        });
+                    }
+                    break;
+                }
+            }
+        };
         const handleWheel = (event: WheelEvent) => {
             if (!panzoomInstance) return;
 
@@ -354,6 +385,8 @@ export default class MyPlugin extends Plugin {
                 if (wheelGestureTimeout) clearTimeout(wheelGestureTimeout);
                 wheelGestureTimeout = setTimeout(() => {
                     wheelGestureAccumulator = 0;
+                    // measure only after the gesture settles
+                    requestCmMeasure();
                 }, 150);
 
                 const baseStep = this.settings.zoomStep;
@@ -370,6 +403,7 @@ export default class MyPlugin extends Plugin {
                 const center = { clientX: event.clientX, clientY: event.clientY };
                 
                 this.applyZoomAndSnap(panzoomInstance, newScale, currentScale, center);
+                const leaves = this.app.workspace.getLeavesOfType('markdown');
                 
                 this.updateDebug({
                     Event: 'Trackpad/Wheel Zoom',
